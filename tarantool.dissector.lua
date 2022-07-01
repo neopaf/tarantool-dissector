@@ -360,16 +360,47 @@ local function parse_error_response(tbl, buffer, subtree)
     end
 end
 
+
+local function add(root, buffer, v)
+    local t = type(v)
+	if t == 'number' then
+        return root:add(buffer, tostring(v))
+    elseif t == 'string' then
+        return root:add(buffer, '"' .. v .. '"')
+    elseif t == 'table' then
+		local arraytree
+        for i, subv in ipairs(v) do
+			if arraytree == nil then
+				local len = 0
+				for _, _ in ipairs(v) do
+					len = len + 1
+				end
+				arraytree = root:add(buffer, string.format('array (%d)', len))
+			end
+            add(arraytree, buffer, subv)
+        end
+		if not arraytree then
+			local len = 0
+			for _, _ in pairs(v) do
+				len = len + 1
+			end
+			local tabletree = root:add(buffer, string.format('table (%d)', len))
+			for subk, subv in pairs(v) do
+				add(tabletree:add(buffer, subk), buffer, subv)
+			end
+		end
+    else
+        assert(false, string.format("Elements are expected to be number/string/table, but this one type[%s]", t))
+    end
+end
+
 local function parse_response(tbl, buffer, subtree)
     local data = tbl[DATA]
      if not data then
          subtree:add(buffer, '(empty response body)')
      else
-        local value = map(data, escape_call_arg)
         local arguments_tree = subtree:add(buffer, 'tuple')
-        for k, v in pairs(value) do
-            arguments_tree:add(buffer, v)
-        end
+        add(arguments_tree, buffer, data)
     end
 end
 
@@ -460,6 +491,9 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
 
     local header_length, body_data = iterator()
     header_length = header_length - size_length - 1
+    assert(size_length + header_length < packet_buffer:len(), string.format("size_length[%s]+header_length[%d] < packet_buffer:len[%d]. Note: buffer:len[%d] request_length[%d]",
+            size_length, header_length, packet_buffer:len(),
+            buffer:len(), request_length))
     local body_buffer = packet_buffer(size_length + header_length)
 
 
@@ -494,3 +528,4 @@ end
 
 tcp_table = DissectorTable.get("tcp.port")
 tcp_table:add(3301,tarantool_proto)
+tcp_table:add(4308,tarantool_proto)

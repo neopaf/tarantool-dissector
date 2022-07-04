@@ -1,5 +1,6 @@
 
 local msgpack = require 'MessagePack'
+local json = require 'json'
 
 -- constants
 -- common
@@ -94,6 +95,18 @@ tarantool_proto.fields = {
 }
 ]]
 
+local jsonDissector = Dissector.get("json")
+
+local function add(root, buffer, v, pinfo, tree)
+    if type(v) == 'array' then
+        v = {array=v} -- json dissector seems to assume '{' and if not falls back to Line-based text data (1 lines)
+    end
+    local jsonString = json.encode(v)
+    local jsonBytes = ByteArray.new(jsonString, true)
+    local tvb = jsonBytes:tvb('JSON')
+    jsonDissector:call(tvb, pinfo, tree)
+end
+
 -- extracts bytes from the buffer
 function binary_string(buffer)
     local result = {}
@@ -139,25 +152,12 @@ local function escape_call_arg(a)
     end
 end
 
-local function parse_call(tbl, buffer, subtree)
-    local name = tbl[FUNCTION_NAME]
-    local tuple = tbl[TUPLE]
-
-    local argument_string = table.concat(map(tuple, escape_call_arg), ', ')
-
-    local descr = string.format('%s(%s)', name, argument_string)
-    subtree:add(buffer, descr)
+local function parse_call(tbl, buffer, subtree, pinfo, tree)
+    add(subtree:add(buffer, string.format('%s', tbl[FUNCTION_NAME])), buffer, tbl[TUPLE], pinfo, tree)
 end
 
--- TODO: why do we need "tuple" in `eval' command?
-local function parse_eval(tbl, buffer, subtree)
-    local expression = tbl[EXPRESSION]
-    local tuple = tbl[TUPLE]
-
-    local argument_string = table.concat(map(tuple, escape_call_arg), ', ')
-
-    local descr = string.format('%s(%s)', name, argument_string)
-    subtree:add(buffer, descr)
+local function parse_eval(tbl, buffer, subtree, pinfo, tree)
+    add(subtree:add(buffer, string.format('%s', tbl[EXPRESSION])), buffer, tbl[TUPLE], pinfo, tree)
 end
 
 local function parse_select(tbl, buffer, subtree)
@@ -182,15 +182,8 @@ local function parse_select(tbl, buffer, subtree)
     subtree:add(buffer, descr)
 end
 
-local function parse_insert(tbl, buffer, subtree)
-    local tuple    = tbl[TUPLE]
-    local space_id = tbl[SPACE_ID]
-
-    subtree:add(buffer, 'space_id: ' .. space_id)
-    local tuple_tree = subtree:add(buffer, 'tuple')
-    local tuple_str = table.concat(map(tuple, escape_call_arg), ', ')
-
-    tuple_tree:add(buffer, tuple_str)
+local function parse_insert(tbl, buffer, subtree, pinfo, tree)
+    add(subtree:add(buffer, string.format('space_id: %s', tbl[SPACE_ID])), buffer, tbl[TUPLE], pinfo, tree)
 end
 
 local function parse_delete(tbl, buffer, subtree)
@@ -209,17 +202,9 @@ local function parse_delete(tbl, buffer, subtree)
     subtree:add(buffer, descr)
 end
 
-local function parse_upsert(tbl, buffer, subtree)
-    local space_id = tbl[SPACE_ID]     -- int
-    local index_base = tbl[INDEX_BASE] -- int
-    local ops = tbl[OPS]               -- int
-    local tuple = tbl[TUPLE]           -- array
-
-    subtree:add(buffer, 'space_id: ' .. space_id)
-    local tuple_tree = subtree:add(buffer, 'tuple')
-    local tuple_str = table.concat(map(tuple, escape_call_arg), ', ')
-
-    tuple_tree:add(buffer, tuple_str)
+local function parse_upsert(tbl, buffer, subtree, pinfo, tree)
+    add(subtree:add(buffer, string.format('space_id: %s, index_base: %s, ops: %s',
+            tbl[SPACE_ID], tbl[INDEX_BASE], tbl[OPS])), buffer, tbl[TUPLE], pinfo, tree)
 end
 
 local function parse_auth(tbl, buffer, subtree)
@@ -360,50 +345,8 @@ local function parse_error_response(tbl, buffer, subtree)
     end
 end
 
-
-local function add(root, buffer, v)
-    local t = type(v)
-	if t == 'number' then
-        return root:add(buffer, tostring(v))
-    elseif t == 'string' then
-        return root:add(buffer, '"' .. v .. '"')
-    elseif t == 'boolean' then
-        return root:add(buffer, tostring(v))
-    elseif t == 'table' then
-		local arraytree
-        for i, subv in ipairs(v) do
-			if arraytree == nil then
-				local len = 0
-				for _, _ in ipairs(v) do
-					len = len + 1
-				end
-				arraytree = root:add(buffer, string.format('array (%d)', len))
-			end
-            add(arraytree, buffer, subv)
-        end
-		if not arraytree then
-			local len = 0
-			for _, _ in pairs(v) do
-				len = len + 1
-			end
-			local tabletree = root:add(buffer, string.format('table (%d)', len))
-			for subk, subv in pairs(v) do
-				add(tabletree:add(buffer, subk), buffer, subv)
-			end
-		end
-    else
-        assert(false, string.format("Elements are expected to be number/string/table, but this one type[%s]", t))
-    end
-end
-
-local function parse_response(tbl, buffer, subtree)
-    local data = tbl[DATA]
-     if not data then
-         subtree:add(buffer, '(empty response body)')
-     else
-        local arguments_tree = subtree:add(buffer, 'tuple')
-        add(arguments_tree, buffer, data)
-    end
+local function parse_response(tbl, buffer, subtree, pinfo, tree)
+    add(subtree, buffer, tbl[DATA], pinfo, tree)
 end
 
 local function parse_nop(tbl, buffer, subtree)
@@ -507,7 +450,7 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
 
         local decoder = command.decoder or parser_not_implemented
 
-        decoder(body_data, body_buffer, subtree)
+        decoder(body_data, body_buffer, subtree, pinfo, tree)
 
         pinfo.cols.info = command.name:gsub("^%l", string.upper) .. ' request. ' .. tostring(pinfo.cols.info)
         --[[print(body_data, bytes_used)
@@ -520,7 +463,7 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
         local subtree = tree:add(tarantool_proto,buffer(),"Tarantool protocol data (response)")
         local header_descr = string.format('code: 0x%02x (%s), sync: 0x%04x', header_data[TYPE], command.name, header_data[SYNC])
         subtree:add(packet_buffer(0, header_length), header_descr)
-        command.decoder(body_data, body_buffer, subtree)
+        command.decoder(body_data, body_buffer, subtree, pinfo, tree)
         pinfo.cols.info = 'Response. ' .. tostring(pinfo.cols.info)
     end
 

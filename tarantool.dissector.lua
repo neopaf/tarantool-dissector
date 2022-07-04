@@ -367,6 +367,8 @@ local function add(root, buffer, v)
         return root:add(buffer, tostring(v))
     elseif t == 'string' then
         return root:add(buffer, '"' .. v .. '"')
+    elseif t == 'boolean' then
+        return root:add(buffer, tostring(v))
     elseif t == 'table' then
 		local arraytree
         for i, subv in ipairs(v) do
@@ -528,4 +530,5 @@ end
 
 tcp_table = DissectorTable.get("tcp.port")
 tcp_table:add(3301,tarantool_proto)
+tcp_table:add(3302,tarantool_proto)
 tcp_table:add(4308,tarantool_proto)

@@ -471,7 +471,16 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
 
 end
 
-tcp_table = DissectorTable.get("tcp.port")
-tcp_table:add(3301,tarantool_proto)
-tcp_table:add(3302,tarantool_proto)
-tcp_table:add(4308,tarantool_proto)
+tarantool_proto.prefs.ports = Pref.string("Port(s)", "3301-3302,4308", "Specify port numbers (comma-separated) or port ranges (dash-separated) or mix")
+
+local function add_ports()
+    local tcp_table = DissectorTable.get("tcp.port")
+    tcp_table:add(tarantool_proto.prefs.ports,tarantool_proto)
+end
+
+function tarantool_proto.prefs_changed()
+    add_ports()
+    reload()
+end
+
+add_ports()

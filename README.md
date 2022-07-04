@@ -10,6 +10,10 @@ dissector implemented for Tarantool binary protocol.
 
 ![Wireshark][screenshot]
 
+Suggest to use JSON compact form:
+
+![Settings][settings]
+
 ### How to use
 
 - Setup Wireshark. See chapter [Building and Installing
@@ -36,6 +40,7 @@ local interface `lo0` with filtering by port 3301 and run script with command
 
 [box-protocol]: https://www.tarantool.io/en/doc/latest/dev_guide/internals/box_protocol/
 [screenshot]: screenshot.png
+[settings]: settings.png
 [building-and-installing-wireshark]: https://www.wireshark.org/docs/wsug_html_chunked/ChapterBuildInstall.html
 [plugin-folders]: https://www.wireshark.org/docs/wsug_html_chunked/ChPluginFolders.html
 [control-protocol-dissection]: https://www.wireshark.org/docs/wsug_html_chunked/ChCustProtocolDissectionSection.html

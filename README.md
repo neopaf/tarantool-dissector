@@ -18,7 +18,7 @@ Suggest to use JSON compact form:
 
 - Setup Wireshark. See chapter [Building and Installing
   Wireshark][building-and-installing-wireshark] in documentation.
-- Put a Lua file with dissector and `MessagePack.lua` to a directory with
+- Put a Lua file with dissector, `MessagePack.lua` and `json.lua` to a directory with
   plugins for Wireshark, directory depends on operating system, please refer to
   chapter [Plugin folders][plugin-folders].
   Note that Wireshark requires root privileges, make sure you are using plugin

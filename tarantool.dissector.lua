@@ -107,16 +107,6 @@ local function add(root, buffer, v, pinfo, tree)
     jsonDissector:call(tvb, pinfo, tree)
 end
 
--- extracts bytes from the buffer
-function binary_string(buffer)
-    local result = {}
-    for i=0,buffer:len() - 1 do
-        table.insert(result, string.char(buffer(i, 1):le_uint()))
-    end
-    return table.concat(result, '')
-end
-
-
 local function map(tbl, callback)
     local result = {}
     for k,v in pairs(tbl) do
@@ -413,7 +403,7 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
         return buffer(0, 9):len()
     end
 
-    local iterator = msgpack.unpacker(binary_string(buffer))
+    local iterator = msgpack.unpacker(buffer:raw())
     local _, packet_length = iterator()
 
     -- TODO: check bytes available
@@ -436,7 +426,7 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
 
     local header_length, body_data = iterator()
     header_length = header_length - size_length - 1
-    assert(size_length + header_length < packet_buffer:len(), string.format("size_length[%s]+header_length[%d] < packet_buffer:len[%d]. Note: buffer:len[%d] request_length[%d]",
+    assert(size_length + header_length < packet_buffer:len(), string.format("size_length[%s]+header_length[%d] < packet_buffer:len[%d]. Note: buffer:len[%d] request_length[%d]!",
             size_length, header_length, packet_buffer:len(),
             buffer:len(), request_length))
     local body_buffer = packet_buffer(size_length + header_length)

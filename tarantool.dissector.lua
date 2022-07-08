@@ -409,29 +409,20 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
     -- TODO: check bytes available
 
     local size_length, header_data = iterator()
-    size_length = size_length - 1;
-
+    size_length = size_length - 1
     local packet_buffer = buffer(size_length)
-
-    local request_length = packet_length + size_length
-
-    if (buffer:len() < request_length) then
-        -- debug('reassemble required: ' .. (request_length - buffer:len()) )
-        pinfo.desegment_len = request_length - buffer:len()
+    local desegment_len = size_length + packet_length - buffer:len()
+    if desegment_len > 0 then
+        pinfo.desegment_len = desegment_len
         pinfo.desegment_offset = 0
         return DESEGMENT_ONE_MORE_SEGMENT
     end
 
-    local command = code_to_command(header_data[TYPE])
-
     local header_length, body_data = iterator()
-    header_length = header_length - size_length - 1
-    assert(size_length + header_length < packet_buffer:len(), string.format("size_length[%s]+header_length[%d] < packet_buffer:len[%d]. Note: buffer:len[%d] request_length[%d]!",
-            size_length, header_length, packet_buffer:len(),
-            buffer:len(), request_length))
-    local body_buffer = packet_buffer(size_length + header_length)
+    header_length = header_length - 1
+    local body_buffer = buffer(header_length)
 
-
+    local command = code_to_command(header_data[TYPE])
     if not command.is_response then
         local subtree = tree:add(tarantool_proto, buffer(),"Tarantool protocol data")
         -- subtree:add(tnt_field_sync, header_data[0x01])

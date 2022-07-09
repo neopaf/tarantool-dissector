@@ -116,6 +116,16 @@ f.code = ProtoField.uint32('tnt.code', 'Code', base.DEC, {
 })
 f.sync = ProtoField.uint32('tnt.sync', 'Sync', base.HEX)
 
+f.transtype = ProtoField.string("tnt.transtype", "Type" ,  "Type of transaction")
+f.reply_time = ProtoField.relative_time("tnt.reply_time", "Reply time")
+
+f.peer_new_in = ProtoField.framenum("tnt.reply_in", "New in", base.NONE)
+f.peer_reply_in = ProtoField.framenum("tnt.reply_in", "Reply in", base.NONE)
+f.copy_new_in = ProtoField.framenum("tnt.copy_reply_in", "Copy of new in", base.NONE)
+f.copy_reply_in = ProtoField.framenum("tnt.copy_reply_in", "Copy of reply in", base.NONE)
+
+local tcpStreamField = Field.new('tcp.stream')
+
 local jsonDissector = Dissector.get("json")
 
 local function add(root, buffer, v, pinfo, tree)
@@ -409,6 +419,51 @@ local function code_to_command(code)
     return (codes[code] or unknown_code)
 end
 
+-- cross-refs
+
+--transnum -> {new=framenums, reply=framenums, new_time=time}
+transnums ={}
+
+function getTransInfo(transnumb)
+    local transinfo = transnums[transnumb]
+    if transinfo == nil then
+        transinfo = {new={}, reply={}, new_time=nil}
+        transnums[transnumb] = transinfo
+    end
+    return transinfo
+end
+
+function seenNew(framenum, transnumb, time)
+    local transinfo = getTransInfo(transnumb)
+    transinfo.new[framenum] = 0
+    if transinfo.new_time == nil then transinfo.new_time = time end
+end
+
+function seenReply(framenum, transnumb)
+    local transinfo = getTransInfo(transnumb)
+    transinfo.reply[framenum] = 0
+end
+
+function addTransInfo(subtree, time, transtype, my_framenum, transinfo)
+    if (transinfo == nil or (next(transinfo.reply) == nil))
+            and transtype ~= "reply"
+    then
+        subtree:add_expert_info(PI_SEQUENCE, PI_ERROR, "No reply")
+    end
+
+    if transinfo ~= nil and transinfo.new_time and time then
+        local s,nsfrac = math.modf(time - transinfo.new_time)
+        local dnstime = NSTime(s, nsfrac*1e9)
+        if transtype=="reply" then subtree:add(f.reply_time, dnstime):set_generated() end
+    end
+
+    for peer_framenum in pairs(transinfo.new) do
+        if my_framenum ~= peer_framenum then subtree:add(transtype=="new" and f.copy_new_in or f.peer_new_in, peer_framenum) end
+    end
+    for peer_framenum in pairs(transinfo.reply) do
+        if my_framenum ~= peer_framenum then subtree:add(transtype=="reply" and f.copy_reply_in or f.peer_reply_in, peer_framenum) end
+    end
+end
 
 -- create a function to dissect it
 function tarantool_proto.dissector(buffer, pinfo, tree)
@@ -440,15 +495,34 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
     end
 
     local subtree = tree:add(tarantool_proto, buffer(),"Tarantool protocol data")
-    -- subtree:add(tnt_field_sync, header_data[0x01])
     subtree:add(f.code, header_data[TYPE])
-    subtree:add(f.sync, header_data[SYNC])
+    local sync = header_data[SYNC]
+    subtree:add(f.sync, sync)
+
+    --dumpLinkState()
 
     local header_length, body_data = iterator()
     header_length = header_length - 1
     local body_buffer = buffer(header_length)
 
+
     local command = code_to_command(header_data[TYPE])
+
+    local transnum = tcpStreamField().value*0x100000000 + sync
+    if not pinfo.visited then
+        --subtree:add(buffer(), 'transnum='..transnum)
+        if command.is_response then
+            seenReply(pinfo.number, transnum)
+        else -- new
+            seenNew(pinfo.number, transnum, pinfo.abs_ts)
+        end
+    end
+
+    local transtype = command.is_response and "reply" or "new"
+    subtree:add(f.transtype, transtype):set_generated()
+    addTransInfo(subtree, pinfo.abs_ts, transtype, pinfo.number, transnums[transnum])
+
+
     if not command.is_response then
         local decoder = command.decoder or parser_not_implemented
         decoder(body_data, body_buffer, subtree, pinfo, tree)

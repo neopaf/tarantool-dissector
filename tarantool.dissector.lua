@@ -77,7 +77,7 @@ local SQL_TEXT      = 0x40
 local SQL_BIND      = 0x41
 local SQL_INFO      = 0x42
 local STMT_ID       = 0x43
-local ERROR         = 0x52
+local ERROR_VALUE   = 0x52
 local FIELD_NAME    = 0x00
 local FIELD_TYPE    = 0x01
 local FIELD_COLL    = 0x02
@@ -87,13 +87,34 @@ local FIELD_SPAN    = 0x05
 
 -- declare the protocol
 tarantool_proto = Proto("tarantool","Tarantool")
---[[
-local tnt_field_sync = ProtoField.new('tnt.sync', 'tnt.sync', ftypes.UINT32)
-
-tarantool_proto.fields = {
-    tnt_field_sync
-}
-]]
+local f = tarantool_proto.fields
+f.code = ProtoField.uint32('tnt.code', 'Code', base.DEC, {
+    [SELECT]  = 'select',
+    [INSERT]  = 'insert',
+    [REPLACE] = 'replace',
+    [UPDATE]  = 'update',
+    [DELETE]  = 'delete',
+    [CALL]    = 'call',
+    [CALL_16] = 'call_16',
+    [AUTH]    = 'auth',
+    [EVAL]    = 'eval',
+    [UPSERT]  = 'upsert',
+    [EXECUTE] = 'execute',
+    [NOP]     = 'nop',
+    [PREPARE] = 'prepare',
+    [CONFIRM] = 'confirm',
+    [ROLLBACK] = 'rollback',
+    [JOIN]    = 'join',
+    [VOTE]    = 'vote',
+    [VOTE_DEPRECATED] = 'vote_deprecated',
+    [SUBSCRIBE] = 'subscribe',
+    [FETCH_SNAPSHOT] = 'fetch_snapshot',
+    [REGISTER] = 'register',
+    [PING] = 'ping',
+    [OK]   = 'OK',
+    [0x8000] = 'ERROR',
+})
+f.sync = ProtoField.uint32('tnt.sync', 'Sync', base.HEX)
 
 local jsonDissector = Dissector.get("json")
 
@@ -418,19 +439,18 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
         return DESEGMENT_ONE_MORE_SEGMENT
     end
 
+    local subtree = tree:add(tarantool_proto, buffer(),"Tarantool protocol data")
+    -- subtree:add(tnt_field_sync, header_data[0x01])
+    subtree:add(f.code, header_data[TYPE])
+    subtree:add(f.sync, header_data[SYNC])
+
     local header_length, body_data = iterator()
     header_length = header_length - 1
     local body_buffer = buffer(header_length)
 
     local command = code_to_command(header_data[TYPE])
     if not command.is_response then
-        local subtree = tree:add(tarantool_proto, buffer(),"Tarantool protocol data")
-        -- subtree:add(tnt_field_sync, header_data[0x01])
-        local header_descr = string.format('code: 0x%02x (%s), sync: 0x%04x', header_data[TYPE], command.name, header_data[SYNC])
-        subtree:add(packet_buffer(0, header_length), header_descr)
-
         local decoder = command.decoder or parser_not_implemented
-
         decoder(body_data, body_buffer, subtree, pinfo, tree)
 
         pinfo.cols.info = command.name:gsub("^%l", string.upper) .. ' request. ' .. tostring(pinfo.cols.info)
@@ -441,9 +461,6 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
         -- subtree:add( buffer(0,4),"Request Type: " .. buffer(0,4):le_uint() .. ' ' .. requestName(buffer(0,4):le_uint()) )
         --        request(buffer, subtree)
     else
-        local subtree = tree:add(tarantool_proto,buffer(),"Tarantool protocol data (response)")
-        local header_descr = string.format('code: 0x%02x (%s), sync: 0x%04x', header_data[TYPE], command.name, header_data[SYNC])
-        subtree:add(packet_buffer(0, header_length), header_descr)
         command.decoder(body_data, body_buffer, subtree, pinfo, tree)
         pinfo.cols.info = 'Response. ' .. tostring(pinfo.cols.info)
     end

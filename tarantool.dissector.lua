@@ -116,7 +116,7 @@ f.code = ProtoField.uint32('tnt.code', 'Code', base.DEC, {
 })
 f.sync = ProtoField.uint32('tnt.sync', 'Sync', base.HEX)
 
-f.transtype = ProtoField.string("tnt.transtype", "Type" ,  "Type of transaction")
+f.transtype = ProtoField.string("tnt.transtype", "Type")
 f.reply_time = ProtoField.relative_time("tnt.reply_time", "Reply time")
 
 f.peer_new_in = ProtoField.framenum("tnt.reply_in", "New in", base.NONE)
@@ -124,11 +124,18 @@ f.peer_reply_in = ProtoField.framenum("tnt.reply_in", "Reply in", base.NONE)
 f.copy_new_in = ProtoField.framenum("tnt.copy_reply_in", "Copy of new in", base.NONE)
 f.copy_reply_in = ProtoField.framenum("tnt.copy_reply_in", "Copy of reply in", base.NONE)
 
+f['function'] = ProtoField.string("tnt.function", "Function")
+f.expression = ProtoField.string("tnt.expression", "Expression")
+f.query = ProtoField.string("tnt.query", "Query")
+f.space = ProtoField.string("tnt.space", "Space")
+f.index = ProtoField.string("tnt.index", "index")
+f.ops = ProtoField.string("tnt.ops", "OPS")
+
 local tcpStreamField = Field.new('tcp.stream')
 
 local jsonDissector = Dissector.get("json")
 
-local function add(root, buffer, v, pinfo, tree)
+local function add(v, pinfo, tree)
     if type(v) == 'array' then
         v = {array=v} -- json dissector seems to assume '{' and if not falls back to Line-based text data (1 lines)
     end
@@ -174,11 +181,13 @@ local function escape_call_arg(a)
 end
 
 local function parse_call(tbl, buffer, subtree, pinfo, tree)
-    add(subtree:add(buffer, string.format('%s', tbl[FUNCTION_NAME])), buffer, tbl[TUPLE], pinfo, tree)
+    subtree:add(f['function'], tbl[FUNCTION_NAME])
+    add(tbl[TUPLE], pinfo, tree)
 end
 
 local function parse_eval(tbl, buffer, subtree, pinfo, tree)
-    add(subtree:add(buffer, string.format('%s', tbl[EXPRESSION])), buffer, tbl[TUPLE], pinfo, tree)
+    subtree:add(f.expression, tbl[EXPRESSION])
+    add(tbl[TUPLE], pinfo, tree)
 end
 
 local function parse_select(tbl, buffer, subtree)
@@ -191,20 +200,20 @@ local function parse_select(tbl, buffer, subtree)
 
     local key_string = table.concat(map(key, escape_call_arg), ', ')
 
-    local descr = string.format(
-        'SELECT FROM space %d WHERE index(%d) = (%s) LIMIT %d OFFSET %d ITERATOR %s',
-        space_id,
-        index_id,
-        key_string,
-        limit,
-        offset,
-        iterator or ('null')
-    )
-    subtree:add(buffer, descr)
+    subtree:add(f.query, string.format(
+            'SELECT FROM space %d WHERE index(%d) = (%s) LIMIT %d OFFSET %d ITERATOR %s',
+            space_id,
+            index_id,
+            key_string,
+            limit,
+            offset,
+            iterator or ('null')
+    ))
 end
 
 local function parse_insert(tbl, buffer, subtree, pinfo, tree)
-    add(subtree:add(buffer, string.format('space_id: %s', tbl[SPACE_ID])), buffer, tbl[TUPLE], pinfo, tree)
+    subtree:add(f.space, tbl[SPACE_ID])
+    add(tbl[TUPLE], pinfo, tree)
 end
 
 local function parse_delete(tbl, buffer, subtree)
@@ -224,8 +233,10 @@ local function parse_delete(tbl, buffer, subtree)
 end
 
 local function parse_upsert(tbl, buffer, subtree, pinfo, tree)
-    add(subtree:add(buffer, string.format('space_id: %s, index_base: %s, ops: %s',
-            tbl[SPACE_ID], tbl[INDEX_BASE], tbl[OPS])), buffer, tbl[TUPLE], pinfo, tree)
+    subtree:add(f.space, tbl[SPACE_ID])
+    subtree:add(f.index, tbl[INDEX_BASE])
+    subtree:add(f.ops, tbl[OPS])
+    add(tbl[TUPLE], pinfo, tree)
 end
 
 local function parse_auth(tbl, buffer, subtree)
@@ -367,7 +378,7 @@ local function parse_error_response(tbl, buffer, subtree)
 end
 
 local function parse_response(tbl, buffer, subtree, pinfo, tree)
-    add(subtree, buffer, tbl[DATA], pinfo, tree)
+    add(tbl[DATA], pinfo, tree)
 end
 
 local function parse_nop(tbl, buffer, subtree)
@@ -388,9 +399,9 @@ local function code_to_command(code)
         [DELETE]  = {name = 'delete', decoder = parse_delete},
         [CALL]    = {name = 'call', decoder = parse_call},
         [CALL_16] = {name = 'call_16', decoder = parser_not_implemented}, -- Deprecated.
-        [AUTH]    = {name = 'auth', decoder = parse_auth},
+        [AUTH]    = {name = 'auth', is_response = true, decoder = parse_auth},
         [EVAL]    = {name = 'eval', decoder = parse_eval},
-        [UPSERT]  = {name = 'upsert', decoder = parser_upsert},
+        [UPSERT]  = {name = 'upsert', decoder = parse_upsert},
         [EXECUTE] = {name = 'execute', decoder = parse_execute},
         [NOP]     = {name = 'nop', decoder = parse_nop},
         [PREPARE] = {name = 'prepare', decoder = parse_prepare},
@@ -458,10 +469,10 @@ function addTransInfo(subtree, time, transtype, my_framenum, transinfo)
     end
 
     for peer_framenum in pairs(transinfo.new) do
-        if my_framenum ~= peer_framenum then subtree:add(transtype=="new" and f.copy_new_in or f.peer_new_in, peer_framenum) end
+        if my_framenum ~= peer_framenum then subtree:add(transtype=="new" and f.copy_new_in or f.peer_new_in, peer_framenum):set_generated() end
     end
     for peer_framenum in pairs(transinfo.reply) do
-        if my_framenum ~= peer_framenum then subtree:add(transtype=="reply" and f.copy_reply_in or f.peer_reply_in, peer_framenum) end
+        if my_framenum ~= peer_framenum then subtree:add(transtype=="reply" and f.copy_reply_in or f.peer_reply_in, peer_framenum):set_generated() end
     end
 end
 
@@ -470,9 +481,16 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
     pinfo.cols.protocol = "Tarantool"
 
     if buffer(0, 9):string() == "Tarantool" then
+        local transnum = tcpStreamField().value*0x100000000 + 0
+        if not pinfo.visited then
+            seenNew(pinfo.number, transnum, pinfo.abs_ts)
+        end
+
         pinfo.cols.info = 'Greeting packet. ' .. tostring(pinfo.cols.info)
 
         local subtree = tree:add(tarantool_proto, buffer(),"Tarantool greeting packet")
+        subtree:add(f.transtype, 'new'):set_generated()
+        addTransInfo(subtree, pinfo.abs_ts, 'new', pinfo.number, transnums[transnum])
         subtree:add(buffer(0, 64), "Server version: " .. buffer(0, 64):string())
         subtree:add(buffer(64, 44), "Salt: " .. buffer(64, 44):string())
         subtree:add(buffer(108), "Reserved space")
@@ -481,8 +499,6 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
 
     local iterator = msgpack.unpacker(buffer:raw())
     local _, packet_length = iterator()
-
-    -- TODO: check bytes available
 
     local size_length, header_data = iterator()
     size_length = size_length - 1
@@ -498,8 +514,6 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
     subtree:add(f.code, header_data[TYPE])
     local sync = header_data[SYNC]
     subtree:add(f.sync, sync)
-
-    --dumpLinkState()
 
     local header_length, body_data = iterator()
     header_length = header_length - 1

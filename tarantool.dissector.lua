@@ -32,6 +32,9 @@ local VOTE_DEPRECATED = 0x43
 local VOTE            = 0x44
 local FETCH_SNAPSHOT  = 0x45
 local REGISTER        = 0x46
+local ID      = 0x49
+local WATCH      = 0x4a
+local EVENT      = 0x4c
 
 -- packet keys
 local REQUEST_TYPE  = 0x00
@@ -84,6 +87,10 @@ local FIELD_COLL    = 0x02
 local FIELD_IS_NULLABLE = 0x03
 local FIELD_IS_AUTOINCREMENT = 0x04
 local FIELD_SPAN    = 0x05
+local IPROTO_VERSION=0x54
+local IPROTO_FEATURES=0x55
+local IPROTO_EVENT_KEY    = 0x57
+local IPROTO_EVENT_DATA    = 0x58
 
 -- declare the protocol
 tarantool_proto = Proto("tarantool","Tarantool")
@@ -112,6 +119,9 @@ f.code = ProtoField.uint32('tnt.code', 'Code', base.DEC, {
     [REGISTER] = 'register',
     [PING] = 'ping',
     [OK]   = 'OK',
+    [ID]   = 'id',
+    [WATCH]   = 'watch',
+    [EVENT]   = 'event',
     [0x8000] = 'ERROR',
 })
 f.sync = ProtoField.uint32('tnt.sync', 'Sync', base.HEX)
@@ -130,6 +140,11 @@ f.query = ProtoField.string("tnt.query", "Query")
 f.space = ProtoField.string("tnt.space", "Space")
 f.index = ProtoField.string("tnt.index", "index")
 f.ops = ProtoField.string("tnt.ops", "OPS")
+f.eventKey = ProtoField.string("tnt.event_key", "Event key")
+f.eventData = ProtoField.string("tnt.event_data", "Event data")
+f.extra = ProtoField.string("tnt.extra", "Extra")
+f.version = ProtoField.string("tnt.version", "Version")
+f.features = ProtoField.string("tnt.features", "Features")
 
 local tcpStreamField = Field.new('tcp.stream')
 
@@ -377,6 +392,34 @@ local function parse_error_response(tbl, buffer, subtree)
     end
 end
 
+function dump(o)
+    if type(o) == 'table' then
+        local s = '{ '
+        for k,v in pairs(o) do
+            if type(k) ~= 'number' then k = '"'..k..'"' end
+            s = s .. '['..k..'] = ' .. dump(v) .. ','
+        end
+        return s .. '} '
+    else
+        return tostring(o)
+    end
+end
+
+local function parse_id(tbl, buffer, subtree)
+    subtree:add(f.version, tbl[IPROTO_VERSION] or '(empty)')
+    subtree:add(f.features, dump(tbl[IPROTO_FEATURES]) or '(empty)')
+end
+
+local function parse_watch(tbl, buffer, subtree)
+    subtree:add(f.eventKey, tbl[IPROTO_EVENT_KEY] or '(empty)')
+end
+
+local function parse_event(tbl, buffer, subtree)
+    subtree:add_expert_info(PI_SEQUENCE, PI_ERROR, "Event")
+    subtree:add(f.eventKey, tbl[IPROTO_EVENT_KEY] or '(empty)')
+    subtree:add(f.eventData, tbl[IPROTO_EVENT_DATA] or '(empty)')
+end
+
 local function parse_response(tbl, buffer, subtree, pinfo, tree)
     add(tbl[DATA], pinfo, tree)
 end
@@ -413,6 +456,9 @@ local function code_to_command(code)
         [SUBSCRIBE] = {name = 'subscribe', decoder = parse_subscribe},
         [FETCH_SNAPSHOT] = {name = 'fetch_snapshot', decoder = parser_not_implemented},
         [REGISTER] = {name = 'register', decoder = parser_not_implemented},
+        [ID] = {name = 'id', decoder = parse_id },
+        [WATCH] = {name = 'watch', decoder = parse_watch },
+        [EVENT] = {name = 'event', decoder = parse_event },
 
         -- Admin command codes
         [PING] = {name = 'ping', decoder = parser_not_implemented},
@@ -512,30 +558,29 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
 
     local subtree = tree:add(tarantool_proto, buffer(),"Tarantool protocol data")
     subtree:add(f.code, header_data[TYPE])
-    local sync = header_data[SYNC]
-    subtree:add(f.sync, sync)
+    local sync = header_data[SYNC] or -1
 
     local header_length, body_data = iterator()
     header_length = header_length - 1
     local body_buffer = buffer(header_length)
 
-
     local command = code_to_command(header_data[TYPE])
 
-    local transnum = tcpStreamField().value*0x100000000 + sync
-    if not pinfo.visited then
-        --subtree:add(buffer(), 'transnum='..transnum)
-        if command.is_response then
-            seenReply(pinfo.number, transnum)
-        else -- new
-            seenNew(pinfo.number, transnum, pinfo.abs_ts)
+    if sync >= 0 then
+        subtree:add(f.sync, sync)
+        local transnum = tcpStreamField().value*0x100000000 + sync
+        if not pinfo.visited then
+            --subtree:add(buffer(), 'transnum='..transnum)
+            if command.is_response then
+                seenReply(pinfo.number, transnum)
+            else -- new
+                seenNew(pinfo.number, transnum, pinfo.abs_ts)
+            end
         end
+        local transtype = command.is_response and "reply" or "new"
+        subtree:add(f.transtype, transtype):set_generated()
+        addTransInfo(subtree, pinfo.abs_ts, transtype, pinfo.number, transnums[transnum])
     end
-
-    local transtype = command.is_response and "reply" or "new"
-    subtree:add(f.transtype, transtype):set_generated()
-    addTransInfo(subtree, pinfo.abs_ts, transtype, pinfo.number, transnums[transnum])
-
 
     if not command.is_response then
         local decoder = command.decoder or parser_not_implemented
@@ -551,6 +596,24 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
     else
         command.decoder(body_data, body_buffer, subtree, pinfo, tree)
         pinfo.cols.info = 'Response. ' .. tostring(pinfo.cols.info)
+    end
+
+    local i = 0
+    while i < 10 do
+        local extra_offset, extra_body = iterator()
+        if extra_offset ~= nil then
+            if type(extra_body)=='table' then
+                local data = extra_body[DATA]
+                if data == nil then
+                    subtree:add(f.extra, dump(extra_body))
+                else
+                    add(data, pinfo, tree)
+                end
+            else
+                subtree:add(f.extra, dump(extra_body))
+            end
+        end
+        i = i + 1
     end
 
     return request_length

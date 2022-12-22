@@ -216,13 +216,13 @@ local function parse_select(tbl, buffer, subtree)
     local key_string = table.concat(map(key, escape_call_arg), ', ')
 
     subtree:add(f.query, string.format(
-            'SELECT FROM space %d WHERE index(%d) = (%s) LIMIT %d OFFSET %d ITERATOR %s',
-            space_id,
-            index_id,
-            key_string,
-            limit,
-            offset,
-            iterator or ('null')
+            'SELECT FROM space %d WHERE index(%s) = (%s) LIMIT %s OFFSET %s ITERATOR %s',
+            tostring(space_id),
+            tostring(index_id),
+            tostring(key_string),
+            tostring(limit),
+            tostring(offset),
+            tostring(iterator)
     ))
 end
 

@@ -50,6 +50,15 @@ local function escape(str)
 	return "\"" .. string.gsub(str, ".", ESCAPE_TABLE) .. "\""
 end
 
+local function is_array(t)
+	local i = 0
+	for _ in pairs(t) do
+		i = i + 1
+		if t[i] == nil then return false end
+	end
+	return true
+end
+
 --- Checks what JSON type a variable will be treated as when generating JSON
 ---@param var any a variable to inspect
 ---@return string containing the JSON type. Valid values are "array", "object", "number", "string", "boolean", and "null"
@@ -58,8 +67,9 @@ local function typeof(var)
 	if var == NULL then
 		return "null"
 	elseif t == "table" then
-		local mtval = rawget(getmetatable(var) or {}, "json")
-		if mtval == "array" or (mtval ~= "object" and #var > 0) then
+		--local mtval = rawget(getmetatable(var) or {}, "json")
+		--if mtval == "array" or (mtval ~= "object" and #var > 0) then
+		if is_array(var) then
 			return "array"
 		else
 			return "object"
@@ -69,6 +79,20 @@ local function typeof(var)
 	end
 	error("Unknown data type in typeof")
 end
+
+function dump(o)
+	if type(o) == 'table' then
+		local s = '{ '
+		for k,v in pairs(o) do
+			if type(k) ~= 'number' then k = '"'..k..'"' end
+			s = s .. '['..k..'] = ' .. dump(v) .. ','
+		end
+		return s .. '} '
+	else
+		return tostring(o)
+	end
+end
+
 
 ---Creates json data from an object
 ---@param obj table containing data

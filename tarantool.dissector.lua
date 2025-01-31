@@ -478,13 +478,13 @@ end
 
 -- cross-refs
 
---transnum -> {new=framenums, reply=framenums, new_time=time}
+--transnum -> {new=framenums, reply=framenums, new_time=time, reply_time=time}
 transnums ={}
 
 function getTransInfo(transnumb)
     local transinfo = transnums[transnumb]
     if transinfo == nil then
-        transinfo = {new={}, reply={}, new_time=nil}
+        transinfo = {new={}, reply={}, new_time=nil, reply_time=nil}
         transnums[transnumb] = transinfo
     end
     return transinfo
@@ -496,29 +496,33 @@ function seenNew(framenum, transnumb, time)
     if transinfo.new_time == nil then transinfo.new_time = time end
 end
 
-function seenReply(framenum, transnumb)
+function seenReply(framenum, transnumb, time)
     local transinfo = getTransInfo(transnumb)
     transinfo.reply[framenum] = 0
+    if transinfo.reply_time == nil then transinfo.reply_time = time end
 end
 
-function addTransInfo(subtree, time, transtype, my_framenum, transinfo)
+function addTransInfo(subtree, transtype, my_framenum, transinfo)
     if (transinfo == nil or (next(transinfo.reply) == nil))
             and transtype ~= "reply"
     then
         subtree:add_expert_info(PI_SEQUENCE, PI_ERROR, "No reply")
     end
 
-    if transinfo ~= nil and transinfo.new_time and time then
-        local s,nsfrac = math.modf(time - transinfo.new_time)
-        local dnstime = NSTime(s, nsfrac*1e9)
-        if transtype=="reply" then subtree:add(f.reply_time, dnstime):set_generated() end
-    end
+    if transinfo ~= nil then
+        for peer_framenum in pairs(transinfo.new) do
+            if my_framenum ~= peer_framenum then subtree:add(transtype=="new" and f.copy_new_in or f.peer_new_in, peer_framenum):set_generated() end
+        end
+        for peer_framenum in pairs(transinfo.reply) do
+            if my_framenum ~= peer_framenum then subtree:add(transtype=="reply" and f.copy_reply_in or f.peer_reply_in, peer_framenum):set_generated() end
+        end
 
-    for peer_framenum in pairs(transinfo.new) do
-        if my_framenum ~= peer_framenum then subtree:add(transtype=="new" and f.copy_new_in or f.peer_new_in, peer_framenum):set_generated() end
-    end
-    for peer_framenum in pairs(transinfo.reply) do
-        if my_framenum ~= peer_framenum then subtree:add(transtype=="reply" and f.copy_reply_in or f.peer_reply_in, peer_framenum):set_generated() end
+        if transinfo.new_time and transinfo.reply_time then
+            local s,nsfrac = math.modf(transinfo.reply_time - transinfo.new_time)
+            print(transinfo.reply_time, transinfo.new_time)
+            local dnstime = NSTime(s, math.floor(nsfrac*1e9+0.5))
+            subtree:add(f.reply_time, dnstime):set_generated()
+        end
     end
 end
 
@@ -536,7 +540,7 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
 
         local subtree = tree:add(tarantool_proto, buffer(),"Tarantool greeting packet")
         subtree:add(f.transtype, 'new'):set_generated()
-        addTransInfo(subtree, pinfo.abs_ts, 'new', pinfo.number, transnums[transnum])
+        addTransInfo(subtree, 'new', pinfo.number, transnums[transnum])
         subtree:add(buffer(0, 64), "Server version: " .. buffer(0, 64):string())
         subtree:add(buffer(64, 44), "Salt: " .. buffer(64, 44):string())
         subtree:add(buffer(108), "Reserved space")
@@ -572,14 +576,14 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
         if not pinfo.visited then
             --subtree:add(buffer(), 'transnum='..transnum)
             if command.is_response then
-                seenReply(pinfo.number, transnum)
+                seenReply(pinfo.number, transnum, pinfo.abs_ts)
             else -- new
                 seenNew(pinfo.number, transnum, pinfo.abs_ts)
             end
         end
         local transtype = command.is_response and "reply" or "new"
         subtree:add(f.transtype, transtype):set_generated()
-        addTransInfo(subtree, pinfo.abs_ts, transtype, pinfo.number, transnums[transnum])
+        addTransInfo(subtree, transtype, pinfo.number, transnums[transnum])
     end
 
     if not command.is_response then

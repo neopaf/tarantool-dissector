@@ -519,7 +519,6 @@ function addTransInfo(subtree, transtype, my_framenum, transinfo)
 
         if transinfo.new_time and transinfo.reply_time then
             local s,nsfrac = math.modf(transinfo.reply_time - transinfo.new_time)
-            print(transinfo.reply_time, transinfo.new_time)
             local dnstime = NSTime(s, math.floor(nsfrac*1e9+0.5))
             subtree:add(f.reply_time, dnstime):set_generated()
         end

@@ -478,7 +478,7 @@ end
 
 -- cross-refs
 
---transnum -> {new=framenums, reply=framenums, new_time=time, reply_time=time}
+--transnum -> {new=framenums, reply=framenums, new_time=time, reply_time=time, function_name=}
 transnums ={}
 
 function getTransInfo(transnumb)
@@ -490,10 +490,13 @@ function getTransInfo(transnumb)
     return transinfo
 end
 
-function seenNew(framenum, transnumb, time)
+function seenNew(framenum, transnumb, time, function_name)
     local transinfo = getTransInfo(transnumb)
     transinfo.new[framenum] = 0
-    if transinfo.new_time == nil then transinfo.new_time = time end
+    if transinfo.new_time == nil then
+        transinfo.new_time = time
+        transinfo.function_name = function_name
+    end
 end
 
 function seenReply(framenum, transnumb, time)
@@ -515,6 +518,9 @@ function addTransInfo(subtree, transtype, my_framenum, transinfo)
         end
         for peer_framenum in pairs(transinfo.reply) do
             if my_framenum ~= peer_framenum then subtree:add(transtype=="reply" and f.copy_reply_in or f.peer_reply_in, peer_framenum):set_generated() end
+        end
+        if transtype~="new" and transinfo.function_name then
+            subtree:add(f['function'], transinfo.function_name):set_generated()
         end
 
         if transinfo.new_time and transinfo.reply_time then
@@ -573,17 +579,19 @@ function tarantool_proto.dissector(buffer, pinfo, tree)
         subtree:add(f.sync, sync)
         local transnum = tcpStreamField().value*0x100000000 + sync
         if not pinfo.visited then
+            local function_name = body_data[FUNCTION_NAME]
             --subtree:add(buffer(), 'transnum='..transnum)
             if command.is_response then
                 seenReply(pinfo.number, transnum, pinfo.abs_ts)
             else -- new
-                seenNew(pinfo.number, transnum, pinfo.abs_ts)
+                seenNew(pinfo.number, transnum, pinfo.abs_ts, function_name)
             end
         end
         local transtype = command.is_response and "reply" or "new"
         subtree:add(f.transtype, transtype):set_generated()
         addTransInfo(subtree, transtype, pinfo.number, transnums[transnum])
     end
+    print('hi')
 
     if not command.is_response then
         local decoder = command.decoder or parser_not_implemented

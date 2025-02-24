@@ -27,9 +27,27 @@ local tostring = tostring
 local type = type
 local char = require'string'.char
 local floor = require'math'.floor
+local abs = require'math'.abs
+local log = require'math'.log
+local log2 = log(2)
 local tointeger = require'math'.tointeger or floor
-local frexp = require'math'.frexp or require'mathx'.frexp
-local ldexp = require'math'.ldexp or require'mathx'.ldexp
+local frexp = function(x)
+    if x == 0 then return 0.0,0.0 end
+    local e = floor(log(abs(x)) / log2)
+    if e > 0 then
+        -- Why not x / 2^e? Because for large-but-still-legal values of e this
+        -- ends up rounding to inf and the wheels come off.
+        x = x * 2^-e
+    else
+        x = x / 2^e
+    end
+    -- Normalize to the range [0.5,1)
+    if abs(x) >= 1.0 then
+        x,e = x/2,e+1
+    end
+    return x,e
+end
+local ldexp = function(x,exp) return x * 2.0^exp end
 local huge = require'math'.huge
 local tconcat = require'table'.concat
 
